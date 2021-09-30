@@ -1,0 +1,27 @@
+---
+title: "MHowarthA2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+```
+
+```{r libraries}
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(mapview)
+library(leaflet)
+library(censusapi)
+
+Sys.setenv(CENSUS_KEY="dbcdeeed2f9e907f31811ee78c1f239a2aa77934")
+```
+
+```{r PickPlace}
+ SanJoseGeo<-
++     places("CA", cb = T, progress_bar = F) %>%
++     filter(NAME %in% "San Jose")
+```
+
