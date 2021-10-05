@@ -1,6 +1,10 @@
 ---
-title: "MHowarthA2"
+title: "R Assignment 2"
+author: "Merrick Howarth"
+date: "Oct. 5, 2021"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -19,22 +23,20 @@ library(censusapi)
 Sys.setenv(CENSUS_KEY="dbcdeeed2f9e907f31811ee78c1f239a2aa77934")
 ```
 
+
+
 ```{r GeomData2020, include=FALSE}
 
 # retrieving geometry for Mountain View Place for 2020
 mv_place_2020 <- places("CA", year = 2020, progress_bar = F) %>%
-    filter(NAME %in% "Mountain View") %>% 
-    st_transform(26910)
+    filter(NAMELSAD %in% "Mountain View city")
 
 
 scc_blocks_2020 <- blocks("CA", "Santa Clara", year = 2020, progress_bar = F)%>% 
-  st_transform(26910) %>%
-  select(block = GEOID10, geometry)
+  select(GEOID20, geometry)
 
 scc_blocks_2010 <- blocks("CA", "Santa Clara", year = 2010, progress_bar = F)%>% 
-  st_transform(26910) %>%
-  select(block = GEOID10, geometry) %>%
-  mutate(area = st_area(.)) 
+  select(GEOID10, geometry) 
 
 # Retaining only blocks with centroids in city boundary, not exact but mostly accurate
 mv_blocks_10 <-
@@ -42,38 +44,10 @@ mv_blocks_10 <-
   st_centroid() %>% 
   .[mv_place_2020, ] %>% 
   st_set_geometry(NULL) %>% 
-  left_join(scc_blocks_2020 %>% select(block)) %>% 
+  left_join(scc_blocks_2010 %>% select(GEOID10)) %>% 
   st_as_sf()
+
 ```
-
-```{r GeomData2010, include=FALSE}
-
-# retrieving geometry for Mountain View Place for 2020, using place from 2020 because place boundary is not available for 2010
-mv_place_2020 <- places("CA", year = 2020, progress_bar = F) %>%
-    filter(NAME %in% "Mountain View") %>%
-    st_transform(26910)
-
-
-scc_blocks_2010 <- blocks("CA", "Santa Clara", year = 2010, progress_bar = F)%>% 
-  st_transform(26910) %>%
-  select(block = GEOID10, geometry) %>%
-  mutate(area = st_area(.)) 
-
-
-# applying spacial subsetting to determine block areas within Place
-mv_blocks <- scc_blocks_2010%>%
-  st_intersection(mv_place_2020) %>%
-  select(block, area, geometry) %>%
-  mutate(mv_area = st_area(.)) %>%
-  st_transform(4269)
-
-mapview(mv_blocks)
-```
-
-
-
-
-
 
 
 
@@ -101,7 +75,6 @@ scc_pop_race_2020 <-
   pivot_longer(
     ends_with("N"), names_to = "name", values_to = "estimate") %>%
   
-  
   left_join(
     dec_vars_2020 %>% 
       select(name, label)) %>% 
@@ -121,9 +94,37 @@ scc_pop_race_2020 <-
   
   filter(race != "") %>% 
   
-  select(block, race, pop20 = estimate)
+  select(GEOID20 = block, race, pop20 = estimate)
 
 
+# separate into non-white population and white population
+pop20_nw <- 
+  scc_pop_race_2020 %>%
+  filter(race %in% c(
+              "Black or African American alone", 
+              "American Indian and Alaska Native alone", 
+              "Asian alone", 
+              "Native Hawaiian and Other Pacific Islander alone", 
+              "Some Other Race alone", 
+              "Two or more races")) %>%
+  
+  group_by(GEOID20) %>%
+  
+  summarize(pop_20_nw = sum(pop20, na.rm = T)) 
+
+
+pop20_w <- 
+  scc_pop_race_2020 %>%
+  filter(race %in% "White alone") %>%
+  
+  group_by(GEOID20) %>%
+  
+  summarize(pop_20_w = sum(pop20, na.rm = T)) 
+
+pop_20 <- left_join(pop20_nw, pop20_w)
+
+# removing repetitive data to clean up environment
+rm(pop20_nw, pop20_w)
 ```
 
 
@@ -170,16 +171,11 @@ scc_pop_race_2010 <-
   
   filter(race != "") %>% 
   
-  select(block, race, pop10 = estimate)
+  select(GEOID10 = block, race, pop10 = estimate)
 
-```
-
-
-
-``` {r combineCensus}
-
-delta_pop_nw <- 
-  left_join(scc_pop_race_2010,scc_pop_race_2020) %>%
+# separate into non-white population and white population
+pop10_nw <- 
+  scc_pop_race_2010 %>%
   filter(race %in% c(
               "Black or African American alone", 
               "American Indian and Alaska Native alone", 
@@ -188,40 +184,169 @@ delta_pop_nw <-
               "Some Other Race alone", 
               "Two or more races")) %>%
   
-  group_by(block) %>%
+  group_by(GEOID10) %>%
   
-  summarize(
-            nw_pop_20 = sum(pop20, na.rm = T), 
-            nw_pop_10 = sum(pop10, na.rm = T)
-            ) %>%
-
-  mutate(delta = (nw_pop_20 - nw_pop_10))
+  summarize(pop_10_nw = sum(pop10, na.rm = T)) 
 
 
-delta_pop_w <- 
-  left_join(scc_pop_race_2010,scc_pop_race_2020) %>%
+pop10_w <- 
+  scc_pop_race_2010 %>%
   filter(race %in% "White alone") %>%
   
-  group_by(block) %>%
+  group_by(GEOID10) %>%
   
+  summarize(pop_10_w = sum(pop10, na.rm = T)) 
+
+pop_10 <- left_join(pop10_nw, pop10_w)
+
+# removing repetitive data to clean up environment
+rm(pop10_nw, pop10_w)
+```
+
+
+
+
+```{r Subsetting, include=FALSE}
+
+# selecting 2020 blocks that intersect 2010 blocks
+mv_blocks_20 <- scc_blocks_2020 %>%
+  .[mv_place_2020, ] %>% 
+  left_join(pop_20) %>%
+  filter(!is.na(pop_20_nw))
+
+
+mv_blocks_20_intersect <- mv_blocks_20 %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.)) %>% 
+  st_intersection(
+    mv_blocks_10 %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area_nw = as.numeric(pop_20_nw / original_area),
+    pop_20_c_nw = perc_area_nw * leftover_area,
+    perc_area_w = as.numeric(pop_20_w / original_area),
+    pop_20_c_w = perc_area_w * leftover_area
+  )
+
+
+# sum areas by 2010 geoids to get 2020 pop in 2012 blocks
+
+pop_20_b10 <-
+  mv_blocks_20_intersect %>%
+  group_by(GEOID10) %>%
   summarize(
-            w_pop_20 = sum(pop20, na.rm = T), 
-            w_pop_10 = sum(pop10, na.rm = T)
+            pop_20_nw = as.numeric(sum(pop_20_c_nw)), 
+            pop_20_w = as.numeric(sum(pop_20_c_w))
             ) %>%
-
-  mutate(delta = (w_pop_20 - w_pop_10))
+  st_set_geometry(NULL) %>%
+  select(GEOID10,pop_20_nw,pop_20_w) 
+  
 
 ```
 
-```{r combine}
 
-map_data_nw <- left_join(mv_blocks_10, delta_pop_nw) %>%
-  select(delta, geometry)
+``` {r CombineData, include=FALSE}
 
-map_data_w <- left_join(mv_blocks_10, delta_pop_w) %>%
-  select(delta, geometry)
+map_data <- 
+  mv_blocks_10 %>%
+  left_join(pop_20_b10) %>%
+  left_join(pop_10) %>%
+  mutate(
+    area = as.numeric(st_area(.)) * 0.000247105,  # get area in m^2 convert to acre
+    delta_white = (pop_20_w - pop_10_w) / area,
+    delta_nonwhite = (pop_20_nw - pop_10_nw) / area
+  )%>%
+  select( -c("pop_20_nw","pop_20_w","pop_10_nw","pop_10_w","area"))
 
 
-mapview(map_data_nw) + mapview(map_data_w)
+
 ```
+
+
+
+```{r mapping, include=FALSE}
+#set color pallet
+max <- max(abs(map_data$delta_white), abs(map_data$delta_nonwhite))
+absolute_pal <- colorNumeric(
+  palette = "PiYG",
+  domain = c(-max,max)
+)
+
+
+
+final_map <- leaflet(map_data) %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    fillColor = ~absolute_pal(delta_white),
+    label = ~round(delta_white),
+    color = "grey",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    group = "White"
+  ) %>% 
+  addPolygons(
+    fillColor = ~absolute_pal(delta_nonwhite),
+    label = ~round(delta_nonwhite),
+    color = "grey",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    group = "Non-White"
+  ) %>% 
+  addLegend(
+    pal = absolute_pal,
+    value = c(-max,max),
+    title = "Change in Population 2010-2020 (per acre)"
+  ) %>% 
+  addLayersControl(
+    baseGroups = c("White","Non-White"),
+    options = layersControlOptions(
+      collapsed = F
+    )
+  )
+
+```
+
+
+## Evaluating Population Changes
+
+In this assignment, I was able to explore working with the quite newly released Decennial Census data. The Decennial Census aims to get a full count of all people living in the United States and some associated demographic information like age and race.
+\n
+I selected to work with the census identified "place" of Mountain View because it is an area I am interested in living in potentially upon finishing my degree. Much like many cities in the bay area, it has a lovely downtown and boasts multiple public transit systems which I am always partial to.
+\n
+For this particular investigation, I am looking at changes in White and Non-White populations in the city of Mountain View. I selected this topic as I suspect the bay area has an influx in White population as the Silicon Valley has continued to take root in the area. Evaluating my findings shown below led to me being surprised.
+
+\n
+\n
+```{r}
+
+```
+
+## Mapping Block Population Changes by Race
+
+In order to map the population changes between the 2010 and 2020, I had to manipulate the Census Decennial data to yield total White and Non-White populations then associate them with identified blocks. I selected blocks by considering those which had a geographical centroid in the census place boundary for Mountain View in 2020. After associating blocks and populations, I determined the 2020 populations associated with each 2010 block (I selected a base of 2010 blocks as they were typically geographically larger). I assumed populations were spread evenly over the total area of the 2020 blocks and aggregated 2020 block pieces in the 2010 block boundaries to determine the appropriate population values. My assumption of even distribution allowed me to achieve this by assuming the portion of population was proportional to the area included in the boundary. Once population data was determined for the same areas from both the 2010 and 2020 Decennial Census data, change could be calculated. 
+
+\n
+\n
+## Results
+
+The map below indicates increases or decreases in White and Non-White populations for the city of Mountain View from 2010 to 2020.
+
+```{r}
+final_map
+```
+
+Looking at the different layers of the map, you can see the for most of Mountain View, the White population actually decreased and the Non-White population increased. This is contrary to what I was expecting for the area as I was anticipating some amount of white gentrification. It is very interesting looking at the two layers and seeing the inflow of one population be consistently  close to the outflow of the other, as shown below. I think it would be intrigued to take this a step further and look at it on the larger scale of the bay area to determine if this population flow is mirrored in other areas of the bay; i.e., if white populations from Mountain View displaced colored populations in other areas of the bay. I would also be interested to see how average income has changed to get a more complete picture.
+\n
+```{r}
+map_data[11:20, ]
+```
+\n
+Ultimately, even as an intital analysis, it is a very interesting comparison.
+
+
+
 
