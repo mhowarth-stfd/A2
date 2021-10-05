@@ -7,7 +7,7 @@ output: html_document
 knitr::opts_chunk$set(echo = F, message = F, warning = F)
 ```
 
-```{r libraries}
+```{r libraries, include=FALSE}
 
 library(tidyverse)
 library(sf)
@@ -19,9 +19,209 @@ library(censusapi)
 Sys.setenv(CENSUS_KEY="dbcdeeed2f9e907f31811ee78c1f239a2aa77934")
 ```
 
-```{r PickPlace}
- SanJoseGeo<-
-+     places("CA", cb = T, progress_bar = F) %>%
-+     filter(NAME %in% "San Jose")
+```{r GeomData2020, include=FALSE}
+
+# retrieving geometry for Mountain View Place for 2020
+mv_place_2020 <- places("CA", year = 2020, progress_bar = F) %>%
+    filter(NAME %in% "Mountain View") %>% 
+    st_transform(26910)
+
+
+scc_blocks_2020 <- blocks("CA", "Santa Clara", year = 2020, progress_bar = F)%>% 
+  st_transform(26910) %>%
+  select(block = GEOID10, geometry)
+
+scc_blocks_2010 <- blocks("CA", "Santa Clara", year = 2010, progress_bar = F)%>% 
+  st_transform(26910) %>%
+  select(block = GEOID10, geometry) %>%
+  mutate(area = st_area(.)) 
+
+# Retaining only blocks with centroids in city boundary, not exact but mostly accurate
+mv_blocks_10 <-
+  scc_blocks_2010 %>% 
+  st_centroid() %>% 
+  .[mv_place_2020, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(scc_blocks_2020 %>% select(block)) %>% 
+  st_as_sf()
+```
+
+```{r GeomData2010, include=FALSE}
+
+# retrieving geometry for Mountain View Place for 2020, using place from 2020 because place boundary is not available for 2010
+mv_place_2020 <- places("CA", year = 2020, progress_bar = F) %>%
+    filter(NAME %in% "Mountain View") %>%
+    st_transform(26910)
+
+
+scc_blocks_2010 <- blocks("CA", "Santa Clara", year = 2010, progress_bar = F)%>% 
+  st_transform(26910) %>%
+  select(block = GEOID10, geometry) %>%
+  mutate(area = st_area(.)) 
+
+
+# applying spacial subsetting to determine block areas within Place
+mv_blocks <- scc_blocks_2010%>%
+  st_intersection(mv_place_2020) %>%
+  select(block, area, geometry) %>%
+  mutate(mv_area = st_area(.)) %>%
+  st_transform(4269)
+
+mapview(mv_blocks)
+```
+
+
+
+
+
+
+
+
+
+``` {r CensusData2020, include=FALSE}
+# getting associated census data
+dec_vars_2020 <-
+  listCensusMetadata(
+    name = "2020/dec/pl",
+    type = "variables"
+  )
+
+
+scc_pop_race_2020 <-
+  getCensus(
+    name = "dec/pl", vintage = 2020, region = "block:*", 
+    regionin = "state:06+county:085", vars = "group(P1)") %>% 
+  
+  mutate(
+    block = paste0(state,county,tract,block)) %>% 
+  
+  select(
+    !c(GEO_ID,state,county,tract,NAME) & !ends_with(c("NA"))) %>% 
+  
+  pivot_longer(
+    ends_with("N"), names_to = "name", values_to = "estimate") %>%
+  
+  
+  left_join(
+    dec_vars_2020 %>% 
+      select(name, label)) %>% 
+  
+  select(-name) %>% 
+  
+  separate(
+    label, into = c(NA,NA,"category1","category2"), sep = "!!") %>% 
+  
+  mutate(
+    race = case_when(
+      category1 == "Population of two or more races:" & is.na(category2) ~ "Two or more races",
+      category1 == "Population of two or more races:" ~ "",
+      !is.na(category2) ~ category2,
+      TRUE ~ ""
+    ))%>% 
+  
+  filter(race != "") %>% 
+  
+  select(block, race, pop20 = estimate)
+
+
+```
+
+
+
+``` {r CensusData2010, include=FALSE}
+# getting associated census data
+dec_vars_2010 <-
+  listCensusMetadata(
+    name = "2010/dec/pl",
+    type = "variables"
+  )
+
+
+scc_pop_race_2010 <-
+  getCensus(
+    name = "dec/pl", vintage = 2010, region = "block:*", 
+    regionin = "state:06+county:085", vars = "group(P1)") %>% 
+  
+  mutate(
+    block = paste0(state,county,tract,block)) %>% 
+  
+  select(
+    !c(GEO_ID,state,county,tract,NAME) ) %>% 
+  
+  pivot_longer(
+    starts_with("P001"), names_to = "name", values_to = "estimate") %>%
+  
+  left_join(
+    dec_vars_2010 %>% 
+      select(name, label)) %>% 
+  
+    select(-name) %>% 
+  
+    separate(
+      label, into = c(NA,"category1","category2"), sep = "!!") %>% 
+  
+  mutate(
+    race = case_when(
+      category1 == "Two or More Races" & is.na(category2) ~ "Two or more races",
+      category1 == "Two or More Races" ~ "",
+      !is.na(category2) ~ category2,
+      TRUE ~ ""
+    ))%>% 
+  
+  filter(race != "") %>% 
+  
+  select(block, race, pop10 = estimate)
+
+```
+
+
+
+``` {r combineCensus}
+
+delta_pop_nw <- 
+  left_join(scc_pop_race_2010,scc_pop_race_2020) %>%
+  filter(race %in% c(
+              "Black or African American alone", 
+              "American Indian and Alaska Native alone", 
+              "Asian alone", 
+              "Native Hawaiian and Other Pacific Islander alone", 
+              "Some Other Race alone", 
+              "Two or more races")) %>%
+  
+  group_by(block) %>%
+  
+  summarize(
+            nw_pop_20 = sum(pop20, na.rm = T), 
+            nw_pop_10 = sum(pop10, na.rm = T)
+            ) %>%
+
+  mutate(delta = (nw_pop_20 - nw_pop_10))
+
+
+delta_pop_w <- 
+  left_join(scc_pop_race_2010,scc_pop_race_2020) %>%
+  filter(race %in% "White alone") %>%
+  
+  group_by(block) %>%
+  
+  summarize(
+            w_pop_20 = sum(pop20, na.rm = T), 
+            w_pop_10 = sum(pop10, na.rm = T)
+            ) %>%
+
+  mutate(delta = (w_pop_20 - w_pop_10))
+
+```
+
+```{r combine}
+
+map_data_nw <- left_join(mv_blocks_10, delta_pop_nw) %>%
+  select(delta, geometry)
+
+map_data_w <- left_join(mv_blocks_10, delta_pop_w) %>%
+  select(delta, geometry)
+
+
+mapview(map_data_nw) + mapview(map_data_w)
 ```
 
